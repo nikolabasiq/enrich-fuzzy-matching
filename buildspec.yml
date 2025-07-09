@@ -1,0 +1,59 @@
+version: 0.2
+
+env:
+  variables:
+    MERCHANT_ALIAS: "RDS_merchants.csv"
+    VECTORIZER_MERCHANTS: "vectorizer_merchants.pk"
+    SPARSE_MERCHANTS: "merchants_sparse.npz"
+    LOCATIONS: "RDS_locations.csv"
+    VECTORIZER_LOCATIONS: "vectorizer_locations.pk"
+    SPARSE_LOCATIONS: "locations_sparse.npz"
+  exported-variables:
+    - IMAGE_TAG
+
+phases:
+  pre_build:
+    commands:
+      # Always run the upgrade of AWS CLI as it is not always up to date.
+      # However, in this case, it's important not to update it, since the version ecr command below is deprecated
+      # - pip install --upgrade --user awscli
+
+      - echo Logging in to Amazon ECR...
+      - $(aws ecr get-login --region $AWS_REGION --no-include-email)
+      - IMAGE_TAG=$(date +%s)
+      # - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+
+      - aws s3 cp $DEPENDENCIES_S3_URL/$MERCHANT_ALIAS $MERCHANT_ALIAS
+      - aws s3 cp $DEPENDENCIES_S3_URL/$VECTORIZER_MERCHANTS $VECTORIZER_MERCHANTS
+      - aws s3 cp $DEPENDENCIES_S3_URL/$SPARSE_MERCHANTS $SPARSE_MERCHANTS
+      - aws s3 cp $DEPENDENCIES_S3_URL/$LOCATIONS $LOCATIONS
+      - aws s3 cp $DEPENDENCIES_S3_URL/$VECTORIZER_LOCATIONS $VECTORIZER_LOCATIONS
+      - aws s3 cp $DEPENDENCIES_S3_URL/$SPARSE_LOCATIONS $SPARSE_LOCATIONS
+  build:
+    commands:
+      - echo Build is started on `date`
+      - echo Building the Docker image...
+      - docker build -t $ECR_REPOSITORY_URI:latest
+        --build-arg MERCHANT_ALIAS=$MERCHANT_ALIAS
+        --build-arg VECTORIZER_MERCHANTS=$VECTORIZER_MERCHANTS
+        --build-arg SPARSE_MERCHANTS=$SPARSE_MERCHANTS
+        --build-arg LOCATIONS=$LOCATIONS
+        --build-arg VECTORIZER_LOCATIONS=$VECTORIZER_LOCATIONS
+        --build-arg SPARSE_LOCATIONS=$SPARSE_LOCATIONS .
+      - docker tag $ECR_REPOSITORY_URI:latest $ECR_REPOSITORY_URI:$IMAGE_TAG
+      - echo Build completed on `date`
+  post_build:
+    commands:
+      - aws s3 cp s3://$StackTemplateConfigurationsS3BucketName/enrich-fuzzy-matching/StackTemplateConfiguration.json StackTemplateConfiguration.json
+      - aws cloudformation package --template-file StackTemplate.yml --s3-bucket $BuildArtifactS3BucketName --output-template-file StackTemplatePackaged.yml
+
+      - echo Pushing the Docker images...
+      - docker push $ECR_REPOSITORY_URI:latest
+      - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
+  
+artifacts:
+  files:
+    - StackTemplatePackaged.yml
+    - StackTemplateConfiguration.json
+  base-directory: .
+  discard-paths: yes

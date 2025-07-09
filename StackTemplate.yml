@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Stack that manages open banking services
+
+Parameters:
+  ArtifactsS3BucketName:
+    Type: String
+    Description: S3 bucket which will store lambda dependencies
+  LocalSourceDir:
+    Type: String
+    Description: Content of this directory will be put on S3
+  ArtifactsS3DestinationDir:
+    Type: String
+    Description: Path on ArtifactsS3BucketName that will be destination dir for datapreparation lambda
+  EcrRepositoryName:
+    Type: String
+    Description: ECR Repository name
+  ImageTag:
+    Type: String
+    Description: ECR Image tag passed from CodeBuild
+  MinSimilarityParameter:
+    Type: String
+    Description: Hyper parameter for matcher lambda to be changed manually
+
+Resources:
+  ## Lambda
+  DataPreparationLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Tags: [{"Key": "Project", "Value": "Enrich"},{"Key": "SourcePath", "Value": "https://github.com/basiqio/enrich-fuzzy-matching"},{"Key": "Provisioner", "Value": "cloudformation"}]
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - "datapreparation.data_preparation.prepare_data"
+      Code:
+        ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepositoryName}:${ImageTag}"
+      Description: DataPreparation lambda is responsible for generating data that will be stored on S3 as dependency for Matcher lambda
+      MemorySize: 1024
+      Role: !GetAtt DataPreparationLambdaRole.Arn
+      Timeout: 90
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LoadBalancerAccessSecurityGroup
+          - !ImportValue basiq-vpc-rds-access-sg
+        SubnetIds:
+          - !ImportValue basiq-vpc-zone-a-subnet-private-lambda
+          - !ImportValue basiq-vpc-zone-b-subnet-private-lambda
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ArtifactsS3BucketName
+          SOURCE_DIR: !Ref LocalSourceDir
+          DESTINATION_DIR: !Ref ArtifactsS3DestinationDir
+
+  DataPreparationLambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Tags: [{"Key": "Project", "Value": "Enrich"},{"Key": "SourcePath", "Value": "https://github.com/basiqio/enrich-fuzzy-matching"},{"Key": "Provisioner", "Value": "cloudformation"}]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - s3:ListBucket
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${ArtifactsS3BucketName}/enrich-fuzzy-matching/*"
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - ecr:*
+                Resource:
+                  - !Sub "arn:aws:s3:::${ArtifactsS3BucketName}/enrich-fuzzy-matching/"
+
+  DataPreparationLambdaLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    DeletionPolicy: "Retain"
+    Properties:
+      RetentionInDays: 60
+      LogGroupName: !Sub "/aws/lambda/${DataPreparationLambda}"
+
+  LoadBalancerAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for load balancer
+      SecurityGroupIngress:
+        - CidrIp: '0.0.0.0/0'
+          Description: 'HTTPS traffic'
+          FromPort: 443
+          IpProtocol: 'tcp'
+          ToPort: 443
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+      VpcId: !ImportValue basiq-vpc-id
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}
+
+  ## Lambda
+  MatcherLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Tags: [{"Key": "Project", "Value": "Enrich"},{"Key": "SourcePath", "Value": "https://github.com/basiqio/enrich-fuzzy-matching"},{"Key": "Provisioner", "Value": "cloudformation"}]
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - "matcher.matcher.match_data"
+      Code:
+        ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepositoryName}:${ImageTag}"
+      Description: Matcher lambda is responsible for fuzzy matching
+      MemorySize: 1024
+      Role: !GetAtt MatcherLambdaRole.Arn
+      Timeout: 60
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LoadBalancerAccessSecurityGroup
+        SubnetIds:
+          - !ImportValue basiq-vpc-zone-a-subnet-private-lambda
+          - !ImportValue basiq-vpc-zone-b-subnet-private-lambda
+      Environment:
+        Variables:
+          MIN_SIMILARITY_PARAMETER: !Ref MinSimilarityParameter
+
+  MatcherLambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Tags: [{"Key": "Project", "Value": "Enrich"},{"Key": "SourcePath", "Value": "https://github.com/basiqio/enrich-fuzzy-matching"},{"Key": "Provisioner", "Value": "cloudformation"}]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - ecr:*
+                Resource:
+                  - !Sub "arn:aws:s3:::${ArtifactsS3BucketName}/enrich-fuzzy-matching/"
+
+  MatcherLambdaLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    DeletionPolicy: "Retain"
+    Properties:
+      RetentionInDays: 60
+      LogGroupName: !Sub "/aws/lambda/${MatcherLambda}"
+
+Outputs:
+  # Output matcher lambda name so that Enrich can use it
+  EnrichMatcherLambdaName:
+    Description: "Enrich matcher lambda name"
+    Value:
+      Ref: MatcherLambda
+    Export:
+      Name: enrich-matcher-lambda-name
