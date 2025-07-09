@@ -1,0 +1,160 @@
+name: Data Preparation
+
+on:
+  schedule:
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  pull-requests: write
+  contents: write
+
+env:
+  AWS_ROLE: arn:aws:iam::625864138048:role/id_assume_github_infradeploy
+  PAT_GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
+
+jobs:
+  data-preparation:
+    name: Data Preparation
+    runs-on: [self-hosted-terraform]
+    env:
+      ENVIRONMENT: prd
+      AWS_ACCOUNT: 283399300511
+      TF_VAR_aws_role: prd_github_infradeploy
+      AWS_BASE_ROLE_ARN: arn:aws:iam::625864138048:role/id_assume_github_infradeploy
+      SECRET_NAME: rds/enrich-prd-ear
+
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5
+    
+      - name: Set custom ref variables
+        run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_ENV
+        shell: bash
+    
+      - name: Check out Basiq Github Actions
+        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5
+        with:
+          repository: basiqio/basiq-github-actions
+          ref: v1.7.27
+          token: ${{ env.PAT_GITHUB_TOKEN }}
+          path: ./.github/actions/basiq-github-actions
+    
+      - name: AWS Auth
+        uses: ./.github/actions/basiq-github-actions/aws-auth
+        with:
+          base_aws_role_arn: ${{ env.AWS_BASE_ROLE_ARN }}
+          assume_aws_role: ${{ env.TF_VAR_aws_role }}
+          aws_account_id: ${{ env.AWS_ACCOUNT }}
+    
+      - name: Set up Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: 3.12.2
+    
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+    
+      - name: Run Python Script
+        run: |
+          cd src
+          python -m datapreparation.data_preparation
+          echo "Listing files folder contents:"
+          ls files
+        shell: bash
+
+      - name: Save Files Folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: files
+          path: src/files
+          retention-days: 1
+
+  upload-to-s3-prd:
+    name: Upload To S3 Prod
+    runs-on: [self-hosted-terraform]
+    needs: data-preparation
+    env:
+      ENVIRONMENT: prd
+      AWS_ACCOUNT: 283399300511
+      TF_VAR_aws_role: prd_github_infradeploy
+      AWS_BASE_ROLE_ARN: arn:aws:iam::625864138048:role/id_assume_github_infradeploy
+      DEPENDENCIES_S3_URL: s3://basiq-stack-template-configurations/enrich-fuzzy-matching/docker-image-dependencies
+        
+    steps:
+      - name: Download Files Folder
+        uses: actions/download-artifact@v4
+        with:
+          name: files
+          path: files
+    
+      - name: Check out Basiq Github Actions
+        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5
+        with:
+          repository: basiqio/basiq-github-actions
+          ref: v1.7.27
+          token: ${{ env.PAT_GITHUB_TOKEN }}
+          path: ./.github/actions/basiq-github-actions
+    
+      - name: AWS Auth
+        uses: ./.github/actions/basiq-github-actions/aws-auth
+        with:
+          base_aws_role_arn: ${{ env.AWS_BASE_ROLE_ARN }}
+          assume_aws_role: ${{ env.TF_VAR_aws_role }}
+          aws_account_id: ${{ env.AWS_ACCOUNT }}
+    
+      - name: Upload To S3
+        run: |
+          aws s3 cp ./files/RDS_merchants.csv ${{env.DEPENDENCIES_S3_URL}}/RDS_merchants.csv 
+          aws s3 cp ./files/vectorizer_merchants.pk ${{env.DEPENDENCIES_S3_URL}}/vectorizer_merchants.pk 
+          aws s3 cp ./files/merchants_sparse.npz ${{env.DEPENDENCIES_S3_URL}}/merchants_sparse.npz 
+          aws s3 cp ./files/RDS_locations.csv ${{env.DEPENDENCIES_S3_URL}}/RDS_locations.csv 
+          aws s3 cp ./files/vectorizer_locations.pk ${{env.DEPENDENCIES_S3_URL}}/vectorizer_locations.pk 
+          aws s3 cp ./files/locations_sparse.npz ${{env.DEPENDENCIES_S3_URL}}/locations_sparse.npz 
+        shell: bash
+
+  upload-to-s3-dev:
+    name: Upload To S3 Dev
+    runs-on: [self-hosted-terraform]
+    needs: data-preparation
+    env:
+      ENVIRONMENT: dev
+      AWS_ACCOUNT: 127579097986
+      TF_VAR_aws_role: dev_github_infradeploy
+      AWS_BASE_ROLE_ARN: arn:aws:iam::625864138048:role/id_assume_github_infradeploy
+      DEPENDENCIES_S3_URL: s3://basiq-dev-stack-template-configurations/enrich-fuzzy-matching/docker-image-dependencies
+
+    steps:
+      - name: Download Files Folder
+        uses: actions/download-artifact@v4
+        with:
+          name: files
+          path: files
+    
+      - name: Check out Basiq Github Actions
+        uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v3.5
+        with:
+          repository: basiqio/basiq-github-actions
+          ref: v1.7.27
+          token: ${{ env.PAT_GITHUB_TOKEN }}
+          path: ./.github/actions/basiq-github-actions
+    
+      - name: AWS Auth
+        uses: ./.github/actions/basiq-github-actions/aws-auth
+        with:
+          base_aws_role_arn: ${{ env.AWS_BASE_ROLE_ARN }}
+          assume_aws_role: ${{ env.TF_VAR_aws_role }}
+          aws_account_id: ${{ env.AWS_ACCOUNT }}
+    
+      - name: Upload To S3
+        run: |
+          aws s3 cp ./files/RDS_merchants.csv ${{env.DEPENDENCIES_S3_URL}}/RDS_merchants.csv 
+          aws s3 cp ./files/vectorizer_merchants.pk ${{env.DEPENDENCIES_S3_URL}}/vectorizer_merchants.pk 
+          aws s3 cp ./files/merchants_sparse.npz ${{env.DEPENDENCIES_S3_URL}}/merchants_sparse.npz 
+          aws s3 cp ./files/RDS_locations.csv ${{env.DEPENDENCIES_S3_URL}}/RDS_locations.csv 
+          aws s3 cp ./files/vectorizer_locations.pk ${{env.DEPENDENCIES_S3_URL}}/vectorizer_locations.pk 
+          aws s3 cp ./files/locations_sparse.npz ${{env.DEPENDENCIES_S3_URL}}/locations_sparse.npz 
+        shell: bash

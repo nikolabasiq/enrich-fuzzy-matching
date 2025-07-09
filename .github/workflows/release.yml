@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - '**.md'
+      - 'catalog-info.yaml'
+
+env:
+  PAT_GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  tag:
+    name: Tag
+    runs-on: [self-hosted]
+
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
+
+    - name: gitleaks-action
+      uses: zricethezav/gitleaks-action@518e4898c0cd1cc5d9aab6627a2eabd46e81d8da # v1.6.0
+
+    - name: Check out Basiq Github Actions
+      uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
+      with:
+        repository: basiqio/basiq-github-actions
+        path: ./.github/actions/basiq-github-actions
+        token: ${{ env.PAT_GITHUB_TOKEN }}
+
+    - name: Release
+      uses: ./.github/actions/basiq-github-actions/release
